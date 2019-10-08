@@ -3,7 +3,6 @@
 namespace LiteDB.Shell.Commands
 {
     [Help(
-        Category = "Shell",
         Name = "version",
         Syntax = "ver",
         Description = "Show LiteDB version"
