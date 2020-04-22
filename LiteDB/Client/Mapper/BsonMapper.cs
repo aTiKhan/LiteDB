@@ -23,8 +23,6 @@ namespace LiteDB
     /// </summary>
     public partial class BsonMapper
     {
-        private const int MAX_DEPTH = 20;
-
         #region Properties
 
         /// <summary>
@@ -91,6 +89,11 @@ namespace LiteDB
         public bool IncludeNonPublic { get; set; }
 
         /// <summary>
+        /// Get/Set maximum depth for nested object (default 20)
+        /// </summary>
+        public int MaxDepth { get; set; }
+
+        /// <summary>
         /// A custom callback to change MemberInfo behavior when converting to MemberMapper.
         /// Use mapper.ResolveMember(Type entity, MemberInfo property, MemberMapper documentMappedField)
         /// Set FieldName to null if you want remove from mapped document
@@ -112,8 +115,9 @@ namespace LiteDB
             this.EnumAsInteger = false;
             this.ResolveFieldName = (s) => s;
             this.ResolveMember = (t, mi, mm) => { };
-            this.ResolveCollectionName = (t) => Reflection.IsList(t) ? Reflection.GetListItemType(t).Name : t.Name;
+            this.ResolveCollectionName = (t) => Reflection.IsEnumerable(t) ? Reflection.GetListItemType(t).Name : t.Name;
             this.IncludeFields = false;
+            this.MaxDepth = 20;
 
             _typeInstantiator = customTypeInstantiator ?? ((Type t) => null);
             _typeNameBinder = typeNameBinder ?? DefaultTypeNameBinder.Instance;
@@ -282,7 +286,7 @@ namespace LiteDB
                     (memberInfo as FieldInfo).FieldType;
 
                 // check if datatype is list/array
-                var isList = Reflection.IsList(dataType);
+                var isEnumerable = Reflection.IsEnumerable(dataType);
 
                 // create a property mapper
                 var member = new MemberMapper
@@ -291,8 +295,8 @@ namespace LiteDB
                     FieldName = name,
                     MemberName = memberInfo.Name,
                     DataType = dataType,
-                    IsList = isList,
-                    UnderlyingType = isList ? Reflection.GetListItemType(dataType) : dataType,
+                    IsEnumerable = isEnumerable,
+                    UnderlyingType = isEnumerable ? Reflection.GetListItemType(dataType) : dataType,
                     Getter = getter,
                     Setter = setter
                 };
@@ -309,7 +313,7 @@ namespace LiteDB
                 this.ResolveMember?.Invoke(type, memberInfo, member);
 
                 // test if has name and there is no duplicate field
-                if (member.FieldName != null && mapper.Members.Any(x => x.FieldName.Equals(name, StringComparison.InvariantCultureIgnoreCase)) == false)
+                if (member.FieldName != null && mapper.Members.Any(x => x.FieldName.Equals(name, StringComparison.OrdinalIgnoreCase)) == false)
                 {
                     mapper.Members.Add(member);
                 }
@@ -324,7 +328,7 @@ namespace LiteDB
         protected virtual MemberInfo GetIdMember(IEnumerable<MemberInfo> members)
         {
             return Reflection.SelectMember(members,
-                x => Attribute.IsDefined(x, typeof(BsonIdAttribute), true),
+                x => x.IsDefined(typeof(BsonIdAttribute), true),
                 x => x.Name.Equals("Id", StringComparison.OrdinalIgnoreCase),
                 x => x.Name.Equals(x.DeclaringType.Name + "Id", StringComparison.OrdinalIgnoreCase));
         }
@@ -392,7 +396,7 @@ namespace LiteDB
             var newExpr = Expression.New(ctor, pars.ToArray());
 
             // get lambda expression
-            var fn = mapper.ForType.IsClass ? 
+            var fn = mapper.ForType.GetTypeInfo().IsClass ? 
                 Expression.Lambda<CreateObject>(newExpr, pDoc).Compile() : // Class
                 Expression.Lambda<CreateObject>(Expression.Convert(newExpr, typeof(object)), pDoc).Compile(); // Struct
 
@@ -410,7 +414,7 @@ namespace LiteDB
         {
             member.IsDbRef = true;
 
-            if (member.IsList)
+            if (member.IsEnumerable)
             {
                 RegisterDbRefList(mapper, member, typeNameBinder, collection);
             }
@@ -456,17 +460,30 @@ namespace LiteDB
 
             member.Deserialize = (bson, m) =>
             {
-                var idRef = bson.IsDocument ? bson["$id"] : BsonValue.Null;
-                var missing = bson.IsDocument ? (bson["$missing"] == true) : false;
-                
+                // if not a document (maybe BsonValue.null) returns null
+                if (bson == null || bson.IsDocument == false) return null;
+
+                var doc = bson.AsDocument;
+                var idRef = doc["$id"];
+                var missing = doc["$missing"] == true;
+                var included = doc.ContainsKey("$ref") == false;
+
                 if (missing) return null;
 
-                return m.Deserialize(entity.ForType,
-                    idRef.IsNull ?
-                    bson : // if has no $id object was full loaded (via Include) - so deserialize using normal function
-                    bson.AsDocument.ContainsKey("$type") ?
-                        new BsonDocument { ["_id"] = idRef, ["_type"] = bson["$type"] } :
-                        new BsonDocument { ["_id"] = idRef }); // if has $id, deserialize object using only _id object
+                if (included)
+                {
+                    doc["_id"] = idRef;
+
+                    return m.Deserialize(entity.ForType, doc);
+                }
+                else
+                {
+                    return m.Deserialize(entity.ForType,
+                        doc.ContainsKey("$type") ?
+                            new BsonDocument { ["_id"] = idRef, ["_type"] = bson["$type"] } :
+                            new BsonDocument { ["_id"] = idRef }); // if has $id, deserialize object using only _id object
+                }
+
             };
         }
 
@@ -522,20 +539,26 @@ namespace LiteDB
 
                 foreach (var item in array)
                 {
-                    var refId = item["$id"];
-                    var missing = item["$missing"] == true;
+                    if (item.IsDocument == false) continue;
+
+                    var doc = item.AsDocument;
+                    var idRef = doc["$id"];
+                    var missing = doc["$missing"] == true;
+                    var included = doc.ContainsKey("$ref") == false;
                     
                     // if referece document are missing, do not inlcude on output list
                     if (missing) continue;
 
                     // if refId is null was included by "include" query, so "item" is full filled document
-                    if (refId.IsNull)
+                    if (included)
                     {
+                        item["_id"] = idRef;
+
                         result.Add(item);
                     }
                     else
                     {
-                        var bsonDocument = new BsonDocument { ["_id"] = refId };
+                        var bsonDocument = new BsonDocument { ["_id"] = idRef };
 
                         if (item.AsDocument.ContainsKey("$type"))
                         {

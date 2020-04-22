@@ -21,8 +21,7 @@ namespace LiteDB.Engine
             var settings = new EngineSettings
             {
                 Filename = filename,
-                Password = password,
-                Checkpoint = 0
+                Password = password
             };
 
             var backup = FileHelper.GetSufixFile(filename, "-backup", true);
@@ -56,18 +55,15 @@ namespace LiteDB.Engine
                     throw new LiteException(0, "Invalid data file format to upgrade");
                 }
 
-                try
+                using (var engine = new LiteEngine(settings))
                 {
-                    using (var engine = new LiteEngine(settings))
-                    {
-                        engine.Rebuild(reader);
+                    // copy all database to new Log file with NO checkpoint during all rebuild
+                    engine.Pragma(Pragmas.CHECKPOINT, 0);
 
-                        engine.Checkpoint();
-                    }
-                }
-                finally
-                {
-                    reader.Dispose();
+                    engine.RebuildContent(reader);
+
+                    // after rebuild, copy log bytes into data file
+                    engine.Checkpoint();
                 }
             }
 

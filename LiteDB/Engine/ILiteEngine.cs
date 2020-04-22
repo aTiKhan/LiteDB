@@ -5,9 +5,8 @@ namespace LiteDB.Engine
 {
     public interface ILiteEngine : IDisposable
     {
-        int Analyze(string[] collections);
-        void Checkpoint();
-        long Shrink();
+        int Checkpoint();
+        long Rebuild(RebuildOptions options);
 
         bool BeginTrans();
         bool Commit();
@@ -27,5 +26,8 @@ namespace LiteDB.Engine
 
         bool EnsureIndex(string collection, string name, BsonExpression expression, bool unique);
         bool DropIndex(string collection, string name);
+
+        BsonValue Pragma(string name);
+        bool Pragma(string name, BsonValue value);
     }
 }

@@ -87,6 +87,8 @@ namespace LiteDB
                 type = Reflection.UnderlyingTypeOf(type);
             }
 
+            var typeInfo = type.GetTypeInfo();
+
             // check if your type is already a BsonValue/BsonDocument/BsonArray
             if (type == typeof(BsonValue))
             {
@@ -120,7 +122,7 @@ namespace LiteDB
             }
 
             // enum value is an int
-            else if (type.IsEnum)
+            else if (typeInfo.IsEnum)
             {
                 if (value.IsString) return Enum.Parse(type, value.AsString);
 
@@ -131,12 +133,6 @@ namespace LiteDB
             else if (_customDeserializer.TryGetValue(type, out Func<BsonValue, object> custom))
             {
                 return custom(value);
-            }
-
-            // if type is anonymous use special handler
-            else if(type.IsAnonymousType() && value.IsDocument)
-            {
-                return this.DeserializeAnonymousType(type, value.AsDocument);
             }
 
             // if value is array, deserialize as array
@@ -160,6 +156,12 @@ namespace LiteDB
             // if value is document, deserialize as document
             else if (value.IsDocument)
             {
+                // if type is anonymous use special handler
+                if (type.IsAnonymousType())
+                {
+                    return this.DeserializeAnonymousType(type, value.AsDocument);
+                }
+
                 var doc = value.AsDocument;
 
                 // test if value is object and has _type
@@ -187,12 +189,19 @@ namespace LiteDB
 
                 var o = _typeInstantiator(type) ?? entity.CreateInstance(doc);
 
-                if (o is IDictionary && type.IsGenericType)
+                if (o is IDictionary dict)
                 {
-                    var k = type.GetGenericArguments()[0];
-                    var t = type.GetGenericArguments()[1];
+                    if (o.GetType().GetTypeInfo().IsGenericType)
+                    {
+                        var k = type.GetGenericArguments()[0];
+                        var t = type.GetGenericArguments()[1];
 
-                    this.DeserializeDictionary(k, t, (IDictionary)o, value.AsDocument);
+                        this.DeserializeDictionary(k, t, dict, value.AsDocument);
+                    }
+                    else
+                    {
+                        this.DeserializeDictionary(typeof(object), typeof(object), dict, value.AsDocument);
+                    }
                 }
                 else
                 {
@@ -224,9 +233,8 @@ namespace LiteDB
         {
             var itemType = Reflection.GetListItemType(type);
             var enumerable = (IEnumerable)Reflection.CreateInstance(type);
-            var list = enumerable as IList;
 
-            if (list != null)
+            if (enumerable is IList list)
             {
                 foreach (BsonValue item in value)
                 {
@@ -248,9 +256,10 @@ namespace LiteDB
 
         private void DeserializeDictionary(Type K, Type T, IDictionary dict, BsonDocument value)
         {
+            var isKEnum = K.GetTypeInfo().IsEnum;
             foreach (var el in value.GetElements())
             {
-                var k = K.IsEnum ? Enum.Parse(K, el.Key) : Convert.ChangeType(el.Key, K);
+                var k = isKEnum ? Enum.Parse(K, el.Key) : K == typeof(Uri) ? new Uri(el.Key) : Convert.ChangeType(el.Key, K);
                 var v = this.Deserialize(T, el.Value);
 
                 dict.Add(k, v);
