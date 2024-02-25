@@ -186,6 +186,14 @@ namespace LiteDB.Engine
             // read all pages to get confirmed transactions (do not read page content, only page header)
             foreach (var buffer in _disk.ReadFull(FileOrigin.Log))
             {
+                if(buffer.IsBlank())
+                {
+                    // this should not happen, but if it does, it means there's a zeroed page in the file
+                    // just skip it
+                    current += PAGE_SIZE;
+                    continue;
+                }
+
                 // read direct from buffer to avoid create BasePage structure
                 var pageID = buffer.ReadUInt32(BasePage.P_PAGE_ID);
                 var isConfirmed = buffer.ReadBool(BasePage.P_IS_CONFIRMED);
@@ -238,7 +246,7 @@ namespace LiteDB.Engine
         public int Checkpoint()
         {
             // no log file or no confirmed transaction, just exit
-            if (_disk.GetLength(FileOrigin.Log) == 0 || _confirmTransactions.Count == 0) return 0;
+            if (_disk.GetVirtualLength(FileOrigin.Log) == 0 || _confirmTransactions.Count == 0) return 0;
 
             var mustExit = _locker.EnterExclusive();
 
@@ -261,7 +269,7 @@ namespace LiteDB.Engine
         public int TryCheckpoint()
         {
             // no log file or no confirmed transaction, just exit
-            if (_disk.GetLength(FileOrigin.Log) == 0 || _confirmTransactions.Count == 0) return 0;
+            if (_disk.GetVirtualLength(FileOrigin.Log) == 0 || _confirmTransactions.Count == 0) return 0;
 
             if (_locker.TryEnterExclusive(out var mustExit) == false) return 0;
 
@@ -288,17 +296,24 @@ namespace LiteDB.Engine
             LOG($"checkpoint", "WAL");
 
             // wait all pages write on disk
-            _disk.Queue.Wait();
+            _disk.Queue.Value.Wait();
 
             var counter = 0;
 
-            ENSURE(_disk.Queue.Length == 0, "no pages on queue when checkpoint");
+            ENSURE(_disk.Queue.Value.Length == 0, "no pages on queue when checkpoint");
 
             // getting all "good" pages from log file to be copied into data file
             IEnumerable<PageBuffer> source()
             {
                 foreach (var buffer in _disk.ReadFull(FileOrigin.Log))
                 {
+                    if (buffer.IsBlank())
+                    {
+                        // this should not happen, but if it does, it means there's a zeroed page in the file
+                        // just skip it
+                        continue;
+                    }
+
                     // read direct from buffer to avoid create BasePage structure
                     var transactionID = buffer.ReadUInt32(BasePage.P_TRANSACTION_ID);
 

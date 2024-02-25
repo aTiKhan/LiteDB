@@ -17,6 +17,7 @@ namespace LiteDB.Engine
         private readonly HeaderPage _header;
         private readonly LockService _locker;
         private readonly DiskReader _reader;
+        private readonly DiskService _disk;
         private readonly WalIndexService _walIndex;
 
         // instances from transaction
@@ -39,7 +40,17 @@ namespace LiteDB.Engine
         public ICollection<BasePage> LocalPages => _localPages.Values;
         public int ReadVersion => _readVersion;
 
-        public Snapshot(LockMode mode, string collectionName, HeaderPage header, uint transactionID, TransactionPages transPages, LockService locker, WalIndexService walIndex, DiskReader reader, bool addIfNotExists)
+        public Snapshot(
+            LockMode mode, 
+            string collectionName, 
+            HeaderPage header, 
+            uint transactionID, 
+            TransactionPages transPages, 
+            LockService locker, 
+            WalIndexService walIndex, 
+            DiskReader reader, 
+            DiskService disk,
+            bool addIfNotExists)
         {
             _mode = mode;
             _collectionName = collectionName;
@@ -49,6 +60,7 @@ namespace LiteDB.Engine
             _locker = locker;
             _walIndex = walIndex;
             _reader = reader;
+            _disk = disk;
 
             // enter in lock mode according initial mode
             if (mode == LockMode.Write)
@@ -59,7 +71,7 @@ namespace LiteDB.Engine
             // get lastest read version from wal-index
             _readVersion = _walIndex.CurrentReadVersion;
 
-            var srv = new CollectionService(_header, this, _transPages);
+            var srv = new CollectionService(_header, _disk, this, _transPages);
 
             // read collection (create if new - load virtual too)
             srv.Get(_collectionName, addIfNotExists, ref _collectionPage);
@@ -252,7 +264,7 @@ namespace LiteDB.Engine
             // get minimum slot to check for free page. Returns -1 if need NewPage
             var startSlot = DataPage.GetMinimumIndexSlot(length);
 
-            // check for avaiable re-usable page
+            // check for available re-usable page
             for (int currentSlot = startSlot; currentSlot >= 0; currentSlot--)
             {
                 var freePageID = _collectionPage.FreeDataPageList[currentSlot];
@@ -263,7 +275,7 @@ namespace LiteDB.Engine
                 var page = this.GetPage<DataPage>(freePageID);
 
                 ENSURE(page.PageListSlot == currentSlot, "stored slot must be same as called");
-                ENSURE(page.FreeBytes >= length, "ensure selected page has space enougth for this content");
+                ENSURE(page.FreeBytes >= length, "ensure selected page has space enough for this content");
 
                 // mark page page as dirty
                 page.IsDirty = true;
@@ -271,7 +283,7 @@ namespace LiteDB.Engine
                 return page;
             }
 
-            // if not page free list page avaiable, create new page
+            // if there is no re-usable page, create a new one
             return this.NewPage<DataPage>();
         }
 
@@ -555,7 +567,7 @@ namespace LiteDB.Engine
         /// </summary>
         public void DropCollection(Action safePoint)
         {
-            var indexer = new IndexService(this, _header.Pragmas.Collation);
+            var indexer = new IndexService(this, _header.Pragmas.Collation, _disk.MAX_ITEMS_COUNT);
 
             // CollectionPage will be last deleted page (there is no NextPageID from CollectionPage)
             _transPages.FirstDeletedPageID = _collectionPage.PageID;

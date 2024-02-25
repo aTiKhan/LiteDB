@@ -108,7 +108,7 @@ namespace LiteDB
 
                 if (isWildCardOn)
                 {
-                    if (char.ToUpper(c) == char.ToUpper(p))
+                    if (collation.Compare(c.ToString(), p.ToString()) == 0)
                     {
                         isWildCardOn = false;
                         patternIndex++;
@@ -140,7 +140,7 @@ namespace LiteDB
                 }
                 else
                 {
-                    if (collation.Compare(c, p) == 0)
+                    if (collation.Compare(c.ToString(), p.ToString()) == 0)
                     {
                         patternIndex++;
                     }
@@ -148,6 +148,8 @@ namespace LiteDB
                     {
                         if (lastWildCard >= 0)
                         {
+                            int back = patternIndex - lastWildCard - 1;
+                            i -= back;
                             patternIndex = lastWildCard;
                         }
                         else

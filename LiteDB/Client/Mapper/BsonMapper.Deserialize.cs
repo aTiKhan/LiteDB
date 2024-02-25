@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
@@ -12,7 +12,7 @@ namespace LiteDB
         #region Basic direct .NET convert types
 
         // direct bson types
-        private HashSet<Type> _bsonTypes = new HashSet<Type>
+        private readonly HashSet<Type> _bsonTypes = new HashSet<Type>
         {
             typeof(String),
             typeof(Int32),
@@ -27,7 +27,7 @@ namespace LiteDB
         };
 
         // simple convert types
-        private HashSet<Type> _basicTypes = new HashSet<Type>
+        private readonly HashSet<Type> _basicTypes = new HashSet<Type>
         {
             typeof(Int16),
             typeof(UInt16),
@@ -167,9 +167,24 @@ namespace LiteDB
                 // test if value is object and has _type
                 if (doc.TryGetValue("_type", out var typeField) && typeField.IsString)
                 {
-                    type = _typeNameBinder.GetType(typeField.AsString);
+                    var actualType = _typeNameBinder.GetType(typeField.AsString);
 
-                    if (type == null) throw LiteException.InvalidTypedName(typeField.AsString);
+                    if (actualType == null) throw LiteException.InvalidTypedName(typeField.AsString);
+
+                    // avoid initialize class that are not assignable 
+                    if (!type.IsAssignableFrom(actualType))
+                    {
+                        throw LiteException.DataTypeNotAssignable(type.FullName, actualType.FullName);
+                    }
+
+                    // avoid use of "System.Diagnostics.Process" in object type definition
+                    // using String test to work in .netstandard 1.3
+                    if (actualType.FullName.Equals("System.Diagnostics.Process", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw LiteException.AvoidUseOfProcess();
+                    }
+
+                    type = actualType;
                 }
                 // when complex type has no definition (== typeof(object)) use Dictionary<string, object> to better set values
                 else if (type == typeof(object))
@@ -243,7 +258,7 @@ namespace LiteDB
             }
             else
             {
-                var addMethod = type.GetMethod("Add");
+                var addMethod = type.GetMethod("Add", new Type[] { itemType });
 
                 foreach (BsonValue item in value)
                 {
@@ -293,6 +308,12 @@ namespace LiteDB
             foreach (var par in ctor.GetParameters())
             {
                 var arg = this.Deserialize(par.ParameterType, value[par.Name]);
+
+                //  if name is Id and arg is null, look for _id
+                if (arg == null && StringComparer.OrdinalIgnoreCase.Equals(par.Name, "Id") && value.TryGetValue("_id", out var id))
+                {
+                    arg = this.Deserialize(par.ParameterType, id);
+                }
 
                 args.Add(arg);
             }

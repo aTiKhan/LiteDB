@@ -2,7 +2,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +17,7 @@ namespace LiteDB.Engine
     {
         private readonly MemoryCache _cache;
         private readonly Lazy<DiskWriterQueue> _queue;
+        private readonly EngineState _state;
 
         private IStreamFactory _dataFactory;
         private readonly IStreamFactory _logFactory;
@@ -28,9 +28,13 @@ namespace LiteDB.Engine
         private long _dataLength;
         private long _logLength;
 
-        public DiskService(EngineSettings settings, int[] memorySegmentSizes)
+        public DiskService(
+            EngineSettings settings, 
+            EngineState state,
+            int[] memorySegmentSizes)
         {
             _cache = new MemoryCache(memorySegmentSizes);
+            _state = state;
 
             // get new stream factory based on settings
             _dataFactory = settings.CreateDataFactory();
@@ -40,10 +44,10 @@ namespace LiteDB.Engine
             _dataPool = new StreamPool(_dataFactory, false);
             _logPool = new StreamPool(_logFactory, true);
 
-            var isNew = !_dataFactory.Exists() || _dataFactory.GetLength() == 0L;
+            var isNew = _dataFactory.GetLength() == 0L;
 
             // create lazy async writer queue for log file
-            _queue = new Lazy<DiskWriterQueue>(() => new DiskWriterQueue(_logPool.Writer));
+            _queue = new Lazy<DiskWriterQueue>(() => new DiskWriterQueue(_logPool.Writer, state));
 
             // create new database if not exist yet
             if (isNew)
@@ -56,13 +60,13 @@ namespace LiteDB.Engine
             // if not readonly, force open writable datafile
             if (settings.ReadOnly == false)
             {
-                var dummy = _dataPool.Writer.CanRead;
+                _ = _dataPool.Writer.CanRead;
             }
 
             // get initial data file length
             _dataLength = _dataFactory.GetLength() - PAGE_SIZE;
 
-            // get initial log file length
+            // get initial log file length (should be 1 page before)
             if (_logFactory.Exists())
             {
                 _logLength = _logFactory.GetLength() - PAGE_SIZE;
@@ -76,7 +80,7 @@ namespace LiteDB.Engine
         /// <summary>
         /// Get async queue writer
         /// </summary>
-        public DiskWriterQueue Queue => _queue.Value;
+        public Lazy<DiskWriterQueue> Queue => _queue;
 
         /// <summary>
         /// Get memory cache instance
@@ -119,8 +123,15 @@ namespace LiteDB.Engine
         /// </summary>
         public DiskReader GetReader()
         {
-            return new DiskReader(_cache, _dataPool, _logPool);
+            return new DiskReader(_state, _cache, _dataPool, _logPool);
         }
+
+        /// <summary>
+        /// This method calculates the maximum number of items (documents or IndexNodes) that this database can have.
+        /// The result is used to prevent infinite loops in case of problems with pointers
+        /// Each page support max of 255 items. Use 10 pages offset (avoid empty disk)
+        /// </summary>
+        public uint MAX_ITEMS_COUNT => (uint)(((_dataLength + _logLength) / PAGE_SIZE) + 10) * byte.MaxValue;
 
         /// <summary>
         /// When a page are requested as Writable but not saved in disk, must be discard before release
@@ -186,15 +197,14 @@ namespace LiteDB.Engine
                 count++;
             }
 
-            _queue.Value.Run();
-
             return count;
         }
 
         /// <summary>
-        /// Get virtual file length: real file can be small but async thread can still writing on disk
+        /// Get virtual file length: real file can be small because async thread can still writing on disk
+        /// and incrementing file size (Log file)
         /// </summary>
-        public long GetLength(FileOrigin origin)
+        public long GetVirtualLength(FileOrigin origin)
         {
             if (origin == FileOrigin.Log)
             {
@@ -207,31 +217,21 @@ namespace LiteDB.Engine
         }
 
         /// <summary>
-        /// Clear data file, close any data stream pool, change password and re-create data factory
+        /// Mark a file with a single signal to next open do auto-rebuild. Used only when closing database (after close files)
         /// </summary>
-        public void ChangePassword(string password, EngineSettings settings)
+        internal void MarkAsInvalidState()
         {
-            if (settings.Password == password) return;
-
-            // empty data file
-            this.SetLength(0, FileOrigin.Data);
-
-            // close all streams
-            _dataPool.Dispose();
-
-            // delete data file
-            _dataFactory.Delete();
-
-            settings.Password = password;
-
-            // new datafile will be created with new password
-            _dataFactory = settings.CreateDataFactory();
-
-            // create stream pool
-            _dataPool = new StreamPool(_dataFactory, false);
-
-            // get initial data file length
-            _dataLength = -PAGE_SIZE;
+            FileHelper.TryExec(60, () =>
+            {
+                using (var stream = _dataFactory.GetStream(true, true))
+                {
+                    var buffer = new byte[PAGE_SIZE];
+                    stream.Read(buffer, 0, PAGE_SIZE);
+                    buffer[HeaderPage.P_INVALID_DATAFILE_STATE] = 1;
+                    stream.Position = 0;
+                    stream.Write(buffer, 0, PAGE_SIZE);
+                }
+            });
         }
 
         #region Sync Read/Write operations
@@ -251,7 +251,7 @@ namespace LiteDB.Engine
             try
             {
                 // get length before starts (avoid grow during loop)
-                var length = this.GetLength(origin);
+                var length = this.GetVirtualLength(origin);
 
                 stream.Position = 0;
 
@@ -259,7 +259,9 @@ namespace LiteDB.Engine
                 {
                     var position = stream.Position;
 
-                    stream.Read(buffer, 0, PAGE_SIZE);
+                    var bytesRead = stream.Read(buffer, 0, PAGE_SIZE);
+
+                    ENSURE(bytesRead == PAGE_SIZE, $"ReadFull must read PAGE_SIZE bytes [{bytesRead}]");
 
                     yield return new PageBuffer(buffer, 0, 0)
                     {
