@@ -1,10 +1,8 @@
 ﻿using System;
-using System.Collections.Concurrent;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using static LiteDB.Constants;
 
 namespace LiteDB.Engine
@@ -28,8 +26,10 @@ namespace LiteDB.Engine
         private long _dataLength;
         private long _logLength;
 
+        private static readonly ArrayPool<byte> _bufferPool = ArrayPool<byte>.Shared;
+
         public DiskService(
-            EngineSettings settings, 
+            EngineSettings settings,
             EngineState state,
             int[] memorySegmentSizes)
         {
@@ -225,11 +225,12 @@ namespace LiteDB.Engine
             {
                 using (var stream = _dataFactory.GetStream(true, true))
                 {
-                    var buffer = new byte[PAGE_SIZE];
+                    var buffer = _bufferPool.Rent(PAGE_SIZE);
                     stream.Read(buffer, 0, PAGE_SIZE);
                     buffer[HeaderPage.P_INVALID_DATAFILE_STATE] = 1;
                     stream.Position = 0;
                     stream.Write(buffer, 0, PAGE_SIZE);
+                    _bufferPool.Return(buffer, true);
                 }
             });
         }
@@ -261,7 +262,7 @@ namespace LiteDB.Engine
 
                     var bytesRead = stream.Read(buffer, 0, PAGE_SIZE);
 
-                    ENSURE(bytesRead == PAGE_SIZE, $"ReadFull must read PAGE_SIZE bytes [{bytesRead}]");
+                    ENSURE(bytesRead == PAGE_SIZE, "ReadFull must read PAGE_SIZE bytes [{0}]", bytesRead);
 
                     yield return new PageBuffer(buffer, 0, 0)
                     {

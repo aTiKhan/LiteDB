@@ -1,8 +1,10 @@
 # LiteDB - A .NET NoSQL Document Store in a single data file
 
+[![NuGet Version](https://img.shields.io/nuget/v/LiteDB)](https://www.nuget.org/packages/LiteDB/)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/LiteDB)](https://www.nuget.org/packages/LiteDB/)
 [![Build status](https://ci.appveyor.com/api/projects/status/sfe8he0vik18m033?svg=true)](https://ci.appveyor.com/project/mbdavid/litedb) 
+[![](https://dcbadge.limes.pink/api/server/u8seFBH9Zu?style=flat-square)](https://discord.gg/u8seFBH9Zu)
 
----
 
 LiteDB is a small, fast and lightweight .NET NoSQL embedded database. 
 
@@ -165,7 +167,7 @@ Change details for each release are documented in the [release notes](https://gi
 LiteDB is digitally signed courtesy of [SignPath](https://www.signpath.io)
 
 <a href="https://www.signpath.io">
-    <img src="https://about.signpath.io/assets/logo_signpath_500.png" width="150">
+    <img src="https://about.signpath.io/assets/signpath-logo.svg" width="150">
 </a>
 
 ## License
